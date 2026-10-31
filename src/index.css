@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "DotGothic16", "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+@layer utilities {
+  .pixel-art {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+
+  .pixel-shadow {
+    box-shadow: 0 4px 0 0 rgba(0, 0, 0, 0.45);
+  }
+
+  .pixel-shadow-sm {
+    box-shadow: 0 2px 0 0 rgba(0, 0, 0, 0.4);
+  }
+}

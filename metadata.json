@@ -1,0 +1,6 @@
+{
+  "name": "像素小店物語",
+  "description": "復古像素風溫馨小店經營養成遊戲，自由選擇貓咪烘焙坊、星塵魔法藥水店或燈火深夜食堂，體驗親手與店員混合經營、像素家具裝潢擴建、食譜合成研發與熟客溫馨故事。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
