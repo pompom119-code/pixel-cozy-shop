@@ -28,6 +28,8 @@ import {
   CustomerPhase,
   Direction,
   FloatingEffect,
+  FloorItem,
+  FlyingItem,
   FurnitureCategory,
   GameScreen,
   HeldItem,
@@ -227,6 +229,8 @@ export default function App() {
 
   const [customers, setCustomers] = useState<LiveCustomer[]>([]);
   const [effects, setEffects] = useState<FloatingEffect[]>([]);
+  const [flyingItems, setFlyingItems] = useState<FlyingItem[]>([]);
+  const [floorItems, setFloorItems] = useState<FloorItem[]>([]);
   const [combo, setCombo] = useState<number>(0);
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [staffAssistEnabled, setStaffAssistEnabled] = useState<boolean>(true);
@@ -309,6 +313,8 @@ export default function App() {
     setDirtyTables({});
     setCustomers([]);
     setEffects([]);
+    setFlyingItems([]);
+    setFloorItems([]);
     setCombo(0);
   }, []);
 
@@ -433,8 +439,7 @@ export default function App() {
 
       const recipe = activeTheme.recipes.find((r) => r.id === cust.recipeId);
       pushLog(
-        `完美端上「${recipe?.name}」給 ${cust.name}！獲得 ${finalGold} G${
-          earlyBirdPct >= 30 ? '（早鳥熱騰騰小費加成！）' : ''
+        `完美端上「${recipe?.name}」給 ${cust.name}！獲得 ${finalGold} G${earlyBirdPct >= 30 ? '（早鳥熱騰騰小費加成！）' : ''
         }`
       );
 
@@ -451,6 +456,18 @@ export default function App() {
   const executeStationAction = useCallback(
     (gx: number, gy: number, mode: 'INTERACT' | 'WORK') => {
       if (!activeSave) return;
+
+      // 0. Check Dropped Floor Item at (gx, gy)
+      if (mode === 'INTERACT' && !player.held) {
+        const fi = floorItems.find((f) => f.gx === gx && f.gy === gy);
+        if (fi) {
+          setFloorItems((prev) => prev.filter((item) => item.id !== fi.id));
+          setPlayer((prev) => ({ ...prev, held: fi.item }));
+          retroAudio.playPickup();
+          spawnEffect(gx, gy, '撿起物品', 'COOK');
+          return;
+        }
+      }
 
       // 1. Check Row 0 Ingredient Crate (gy === 0, gx 1..8)
       if (gy === 0 && gx >= 1 && gx <= 8) {
@@ -638,17 +655,17 @@ export default function App() {
 
               const dishItem: HeldItem = matched
                 ? {
-                    kind: 'PLATED_DISH',
-                    recipeId: matched.id,
-                    dishName: matched.name,
-                    spriteKey: matched.spriteKey,
-                  }
+                  kind: 'PLATED_DISH',
+                  recipeId: matched.id,
+                  dishName: matched.name,
+                  spriteKey: matched.spriteKey,
+                }
                 : {
-                    kind: 'PLATED_DISH',
-                    recipeId: null,
-                    dishName: '什錦試作料理',
-                    spriteKey: 'DISH_ROLL',
-                  };
+                  kind: 'PLATED_DISH',
+                  recipeId: null,
+                  dishName: '什錦試作料理',
+                  spriteKey: 'DISH_ROLL',
+                };
 
               setPlayer((prev) => ({ ...prev, held: dishItem }));
               setStoves((prev) => ({
@@ -818,6 +835,7 @@ export default function App() {
       counters,
       customers,
       dirtyTables,
+      floorItems,
       player.held,
       pushLog,
       serveDishToCustomer,
@@ -830,9 +848,25 @@ export default function App() {
 
   // Trigger action on tile directly in front of player chef
   const handleManualInteract = useCallback(() => {
+    const rx = Math.round(player.x);
+    const ry = Math.round(player.y);
     const front = getFrontTile(player);
+
+    if (!player.held) {
+      const fi =
+        floorItems.find((f) => f.gx === front.gx && f.gy === front.gy) ||
+        floorItems.find((f) => f.gx === rx && f.gy === ry);
+      if (fi) {
+        setFloorItems((prev) => prev.filter((item) => item.id !== fi.id));
+        setPlayer((prev) => ({ ...prev, held: fi.item }));
+        retroAudio.playPickup();
+        spawnEffect(fi.gx, fi.gy, '撿起物品', 'COOK');
+        return;
+      }
+    }
+
     executeStationAction(front.gx, front.gy, 'INTERACT');
-  }, [executeStationAction, player]);
+  }, [executeStationAction, floorItems, player]);
 
   const handleManualWork = useCallback(() => {
     const front = getFrontTile(player);
@@ -929,18 +963,335 @@ export default function App() {
     });
   };
 
-  // Global Keyboard Listeners (WASD / Arrows + Space/E + F/C)
+  // Flying Item Landing Logic
+  const handleFlyingItemLanding = useCallback(
+    (flying: FlyingItem) => {
+      const { targetX, targetY, targetAction, targetStationUid, item } = flying;
+
+      if (targetAction === 'STOVE_ADD' && targetStationUid && item.kind === 'PREPPED_INGREDIENT') {
+        let added = false;
+        setStoves((prev) => {
+          const st = prev[targetStationUid] || {
+            ingredients: [],
+            status: 'EMPTY',
+            cookProgress: 0,
+            burnProgress: 0,
+          };
+          if (st.status === 'BURNT' || st.ingredients.length >= 3) {
+            return prev;
+          }
+          added = true;
+          const nextIngs = [...st.ingredients, item.ingId];
+          return {
+            ...prev,
+            [targetStationUid]: {
+              ingredients: nextIngs,
+              status: 'COOKING',
+              cookProgress: st.ingredients.length === 0 ? 0 : Math.min(st.cookProgress, 55),
+              burnProgress: 0,
+            },
+          };
+        });
+
+        if (added) {
+          retroAudio.playCookTap();
+          spawnEffect(targetX, targetY, '🎯 空投進鍋！', 'COOK');
+        } else {
+          retroAudio.playItemLand();
+          setFloorItems((prev) => [
+            ...prev,
+            {
+              id: `floor_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              gx: targetX,
+              gy: targetY,
+              item,
+            },
+          ]);
+          spawnEffect(targetX, targetY, '鍋滿掉落', 'WARN');
+        }
+        return;
+      }
+
+      if (targetAction === 'BOARD_PLACE' && targetStationUid && item.kind === 'RAW_INGREDIENT') {
+        let placed = false;
+        setBoards((prev) => {
+          if (prev[targetStationUid]) return prev;
+          placed = true;
+          return {
+            ...prev,
+            [targetStationUid]: { ingId: item.ingId, isPrepped: false, chopProgress: 0 },
+          };
+        });
+
+        if (placed) {
+          retroAudio.playPlaceFurniture();
+          spawnEffect(targetX, targetY, '🎯 空投上砧板', 'COOK');
+        } else {
+          retroAudio.playItemLand();
+          setFloorItems((prev) => [
+            ...prev,
+            {
+              id: `floor_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              gx: targetX,
+              gy: targetY,
+              item,
+            },
+          ]);
+          spawnEffect(targetX, targetY, '砧板已滿', 'WARN');
+        }
+        return;
+      }
+
+      if (targetAction === 'COUNTER_PLACE' && targetStationUid) {
+        let placed = false;
+        setCounters((prev) => {
+          if (prev[targetStationUid]) return prev;
+          placed = true;
+          return { ...prev, [targetStationUid]: item };
+        });
+
+        if (placed) {
+          retroAudio.playPlaceFurniture();
+          spawnEffect(targetX, targetY, '🎯 投至流理台', 'COOK');
+        } else {
+          retroAudio.playItemLand();
+          setFloorItems((prev) => [
+            ...prev,
+            {
+              id: `floor_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              gx: targetX,
+              gy: targetY,
+              item,
+            },
+          ]);
+          spawnEffect(targetX, targetY, '流理台已滿', 'WARN');
+        }
+        return;
+      }
+
+      if (targetAction === 'TRASH') {
+        retroAudio.playPlaceFurniture();
+        spawnEffect(targetX, targetY, '🗑️ 投進垃圾桶！', 'COOK');
+        return;
+      }
+
+      // Default: Land on floor
+      retroAudio.playItemLand();
+      setFloorItems((prev) => [
+        ...prev,
+        {
+          id: `floor_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          gx: targetX,
+          gy: targetY,
+          item,
+        },
+      ]);
+      spawnEffect(targetX, targetY, '掉在地上', 'WARN');
+    },
+    [spawnEffect]
+  );
+
+  // Flying Item Animation Loop
+  useEffect(() => {
+    if (flyingItems.length === 0) return;
+
+    const timer = window.setInterval(() => {
+      setFlyingItems((prev) => {
+        if (prev.length === 0) return prev;
+        const remaining: FlyingItem[] = [];
+        for (const fItem of prev) {
+          const nextProg = fItem.progress + 0.18;
+          if (nextProg >= 1) {
+            handleFlyingItemLanding(fItem);
+          } else {
+            remaining.push({ ...fItem, progress: nextProg });
+          }
+        }
+        return remaining;
+      });
+    }, 28);
+
+    return () => window.clearInterval(timer);
+  }, [flyingItems.length, handleFlyingItemLanding]);
+
+  // Throw Item Action (Q Key / Throw Button)
+  const handleManualThrow = useCallback(() => {
+    if (
+      !player.held ||
+      screen !== GameScreen.PLAYING ||
+      activeTab !== WorkspaceTab.SHOP_FLOOR ||
+      isPaused ||
+      daySummary ||
+      activeStoryModal
+    ) {
+      return;
+    }
+
+    const tier =
+      EXPANSION_TIERS.find((t) => t.level === activeSave?.expansionLevel) || EXPANSION_TIERS[0];
+    const maxCols = tier.cols;
+    const maxRows = tier.rows;
+
+    let dx = 0;
+    let dy = 0;
+    if (player.facing === 'UP') dy = -1;
+    else if (player.facing === 'DOWN') dy = 1;
+    else if (player.facing === 'LEFT') dx = -1;
+    else if (player.facing === 'RIGHT') dx = 1;
+
+    const startX = Math.round(player.x);
+    const startY = Math.round(player.y);
+    const held = player.held;
+
+    let targetX = startX;
+    let targetY = startY;
+    let targetAction: FlyingItem['targetAction'] = 'FLOOR';
+    let targetStationUid: string | undefined = undefined;
+    let targetStationKind: StationKind | undefined = undefined;
+
+    const maxDistance = 4;
+    let landed = false;
+
+    for (let dist = 1; dist <= maxDistance; dist++) {
+      const tx = startX + dx * dist;
+      const ty = startY + dy * dist;
+
+      // Check boundary (row 0 is wall with ingredient boxes)
+      if (tx < 0 || tx >= maxCols || ty < 1 || ty >= maxRows) {
+        targetX = dist > 1 ? startX + dx * (dist - 1) : startX;
+        targetY = dist > 1 ? startY + dy * (dist - 1) : startY;
+        targetAction = 'FLOOR';
+        landed = true;
+        break;
+      }
+
+      // Check if there is furniture at (tx, ty)
+      const pf = activeSave?.placedFurniture.find((f) => f.gx === tx && f.gy === ty);
+      if (pf) {
+        const def = FURNITURE_CATALOG.find((c) => c.id === pf.itemId);
+        if (def) {
+          // 1. Stove: prepped ingredients can fly straight into pot!
+          if (def.stationKind === StationKind.STOVE && held.kind === 'PREPPED_INGREDIENT') {
+            const st = stoves[pf.uid] || { ingredients: [], status: 'EMPTY' };
+            if (st.status !== 'BURNT' && st.ingredients.length < 3) {
+              targetX = tx;
+              targetY = ty;
+              targetAction = 'STOVE_ADD';
+              targetStationUid = pf.uid;
+              targetStationKind = StationKind.STOVE;
+              landed = true;
+              break;
+            }
+          }
+
+          // 2. Cutting board: raw ingredient flies onto empty board!
+          if (def.stationKind === StationKind.CUTTING_BOARD && held.kind === 'RAW_INGREDIENT') {
+            if (!boards[pf.uid]) {
+              targetX = tx;
+              targetY = ty;
+              targetAction = 'BOARD_PLACE';
+              targetStationUid = pf.uid;
+              targetStationKind = StationKind.CUTTING_BOARD;
+              landed = true;
+              break;
+            }
+          }
+
+          // 3. Counter: any item flies onto empty counter!
+          if (def.stationKind === StationKind.COUNTER && !counters[pf.uid]) {
+            targetX = tx;
+            targetY = ty;
+            targetAction = 'COUNTER_PLACE';
+            targetStationUid = pf.uid;
+            targetStationKind = StationKind.COUNTER;
+            landed = true;
+            break;
+          }
+
+          // 4. Trash bin: throw food/ingredients into trash
+          if (def.stationKind === StationKind.TRASH_BIN) {
+            if (held.kind !== 'CLEAN_PLATE' && held.kind !== 'DIRTY_PLATE') {
+              targetX = tx;
+              targetY = ty;
+              targetAction = 'TRASH';
+              targetStationUid = pf.uid;
+              targetStationKind = StationKind.TRASH_BIN;
+              landed = true;
+              break;
+            }
+          }
+        }
+
+        // Blocked by furniture: stop at previous tile
+        targetX = dist > 1 ? startX + dx * (dist - 1) : startX;
+        targetY = dist > 1 ? startY + dy * (dist - 1) : startY;
+        targetAction = 'FLOOR';
+        landed = true;
+        break;
+      }
+
+      // Reached max open distance
+      if (dist === maxDistance) {
+        targetX = tx;
+        targetY = ty;
+        targetAction = 'FLOOR';
+        landed = true;
+        break;
+      }
+    }
+
+    if (!landed) {
+      targetX = startX;
+      targetY = startY;
+      targetAction = 'FLOOR';
+    }
+
+    retroAudio.playThrow();
+    setPlayer((prev) => ({ ...prev, held: null }));
+
+    const flyingId = `fly_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    setFlyingItems((prev) => [
+      ...prev,
+      {
+        id: flyingId,
+        item: held,
+        startX: player.x,
+        startY: player.y,
+        targetX,
+        targetY,
+        progress: 0,
+        targetStationUid,
+        targetStationKind,
+        targetAction,
+      },
+    ]);
+  }, [
+    activeSave,
+    activeStoryModal,
+    activeTab,
+    boards,
+    counters,
+    daySummary,
+    isPaused,
+    player,
+    screen,
+    stoves,
+  ]);
+
+  // Global Keyboard Listeners (WASD / Arrows + Space/E + F/C + Q)
   const actionHandlersRef = useRef({
     interact: handleManualInteract,
     work: handleManualWork,
+    throwItem: handleManualThrow,
   });
 
   useEffect(() => {
     actionHandlersRef.current = {
       interact: handleManualInteract,
       work: handleManualWork,
+      throwItem: handleManualThrow,
     };
-  }, [handleManualInteract, handleManualWork]);
+  }, [handleManualInteract, handleManualWork, handleManualThrow]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -966,6 +1317,9 @@ export default function App() {
       } else if (code === 'KeyF' || code === 'KeyC') {
         e.preventDefault();
         actionHandlersRef.current.work();
+      } else if (code === 'KeyQ') {
+        e.preventDefault();
+        actionHandlersRef.current.throwItem();
       }
     };
 
@@ -1100,8 +1454,8 @@ export default function App() {
               ? 'LEFT'
               : 'RIGHT'
             : diffY < 0
-            ? 'UP'
-            : 'DOWN';
+              ? 'UP'
+              : 'DOWN';
 
         if (dist <= speed) {
           const rest = prev.autoPath.slice(1);
@@ -1777,11 +2131,10 @@ export default function App() {
                 key={tabKey}
                 type="button"
                 onClick={() => setActiveTab(tabKey)}
-                className={`py-1 transition-colors whitespace-nowrap shrink-0 cursor-pointer border-b-2 ${
-                  activeTab === tabKey
+                className={`py-1 transition-colors whitespace-nowrap shrink-0 cursor-pointer border-b-2 ${activeTab === tabKey
                     ? 'text-amber-300 border-amber-400'
                     : 'text-stone-400 border-transparent hover:text-stone-100'
-                }`}
+                  }`}
               >
                 {label}
               </button>
@@ -1792,33 +2145,30 @@ export default function App() {
             <button
               type="button"
               onClick={() => setSelectedTheme(ShopThemeId.CAT_BAKERY)}
-              className={`hover:text-stone-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                selectedTheme === ShopThemeId.CAT_BAKERY
+              className={`hover:text-stone-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${selectedTheme === ShopThemeId.CAT_BAKERY
                   ? 'text-amber-300 underline underline-offset-8'
                   : ''
-              }`}
+                }`}
             >
               貓咪烘焙坊
             </button>
             <button
               type="button"
               onClick={() => setSelectedTheme(ShopThemeId.MAGIC_ALCHEMY)}
-              className={`hover:text-stone-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                selectedTheme === ShopThemeId.MAGIC_ALCHEMY
+              className={`hover:text-stone-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${selectedTheme === ShopThemeId.MAGIC_ALCHEMY
                   ? 'text-amber-300 underline underline-offset-8'
                   : ''
-              }`}
+                }`}
             >
               魔法藥水店
             </button>
             <button
               type="button"
               onClick={() => setSelectedTheme(ShopThemeId.MIDNIGHT_DINER)}
-              className={`hover:text-stone-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                selectedTheme === ShopThemeId.MIDNIGHT_DINER
+              className={`hover:text-stone-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${selectedTheme === ShopThemeId.MIDNIGHT_DINER
                   ? 'text-amber-300 underline underline-offset-8'
                   : ''
-              }`}
+                }`}
             >
               燈火深夜食堂
             </button>
@@ -1903,11 +2253,10 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setIsPaused((p) => !p)}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                    isPaused
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${isPaused
                       ? 'bg-amber-500 text-stone-950'
                       : 'bg-stone-950 border border-stone-800 text-stone-300 hover:text-stone-100'
-                  }`}
+                    }`}
                 >
                   {isPaused ? '繼續營業' : '暫停時間'}
                 </button>
@@ -1915,11 +2264,10 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setStaffAssistEnabled((v) => !v)}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                    staffAssistEnabled
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${staffAssistEnabled
                       ? 'bg-stone-800 border-emerald-500/50 text-emerald-300'
                       : 'bg-stone-950 border-stone-800 text-stone-400 hover:text-stone-200'
-                  }`}
+                    }`}
                 >
                   {staffAssistEnabled ? '店員協助：開啟' : '純手動挑戰模式'}
                 </button>
@@ -1927,11 +2275,10 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setAutoNextDay((v) => !v)}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                    autoNextDay
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${autoNextDay
                       ? 'bg-stone-800 border-amber-500/60 text-amber-300'
                       : 'bg-stone-950 border-stone-800 text-stone-400 hover:text-stone-200'
-                  }`}
+                    }`}
                 >
                   {autoNextDay ? '自動跨日：開' : '自動跨日：關'}
                 </button>
@@ -1988,16 +2335,19 @@ export default function App() {
                       dirtyTables={dirtyTables}
                       customers={customers}
                       effects={effects}
+                      flyingItems={flyingItems}
+                      floorItems={floorItems}
                       hiredStaffLevels={activeSave.hiredStaffLevels}
                       staffAssistEnabled={staffAssistEnabled}
                       isBuildMode={false}
                       isRemoveMode={false}
                       selectedFurnitureId={null}
-                      onTileClick={() => {}}
+                      onTileClick={() => { }}
                       onPlayTileClick={handlePlayTileClick}
                       onManualMoveStep={handleManualMoveStep}
                       onManualInteract={handleManualInteract}
                       onManualWork={handleManualWork}
+                      onManualThrow={handleManualThrow}
                     />
                   </div>
 
@@ -2007,7 +2357,12 @@ export default function App() {
                     <div className="space-y-2">
                       <h2 className="font-display text-base text-stone-100">主廚手中狀態</h2>
                       <div className="p-3 bg-stone-950 border border-stone-800 rounded-lg text-xs text-amber-200 leading-relaxed">
-                        {getHeldItemLabel(player.held, activeTheme)}
+                        <div>{getHeldItemLabel(player.held, activeTheme)}</div>
+                        {player.held && (
+                          <div className="mt-2 text-[11px] text-orange-300 font-medium">
+                            💡 提示：按 <b>Q</b> 鍵或點擊「投擲物品」可向前方空投！
+                          </div>
+                        )}
                       </div>
                       <div className="flex items-center justify-between text-xs text-stone-400 font-mono tabular-nums pt-1">
                         <span>乾淨餐盤：{cleanPlates} 個</span>
@@ -2083,16 +2438,17 @@ export default function App() {
                     dirtyTables={dirtyTables}
                     customers={customers}
                     effects={effects}
+                    floorItems={floorItems}
                     hiredStaffLevels={activeSave.hiredStaffLevels}
                     staffAssistEnabled={staffAssistEnabled}
                     isBuildMode={true}
                     isRemoveMode={isRemoveMode}
                     selectedFurnitureId={selectedFurnitureId}
                     onTileClick={handleTileClick}
-                    onPlayTileClick={() => {}}
-                    onManualMoveStep={() => {}}
-                    onManualInteract={() => {}}
-                    onManualWork={() => {}}
+                    onPlayTileClick={() => { }}
+                    onManualMoveStep={() => { }}
+                    onManualInteract={() => { }}
+                    onManualWork={() => { }}
                   />
                   <p className="text-xs text-amber-200 px-1">{buildFeedback}</p>
                 </div>
@@ -2103,11 +2459,10 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setIsRemoveMode((v) => !v)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                        isRemoveMode
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${isRemoveMode
                           ? 'bg-rose-600 text-white'
                           : 'bg-stone-800 hover:bg-stone-700 text-stone-200'
-                      }`}
+                        }`}
                     >
                       {isRemoveMode ? '拆除回收模式中 (退80%)' : '切換拆除回收'}
                     </button>
@@ -2160,11 +2515,10 @@ export default function App() {
                           setFurnitureFilter(cat);
                           setIsRemoveMode(false);
                         }}
-                        className={`flex-1 px-2.5 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                          furnitureFilter === cat
+                        className={`flex-1 px-2.5 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${furnitureFilter === cat
                             ? 'bg-stone-800 text-amber-300'
                             : 'text-stone-400 hover:text-stone-200'
-                        }`}
+                          }`}
                       >
                         {label}
                       </button>
@@ -2186,11 +2540,10 @@ export default function App() {
                               `已選取「${item.name}」（${item.cost} G），請點擊左側空白格擺放（注意保留行走通道！）。`
                             );
                           }}
-                          className={`w-full text-left p-3.5 rounded-lg border transition-colors flex items-start gap-3 cursor-pointer ${
-                            isPicked
+                          className={`w-full text-left p-3.5 rounded-lg border transition-colors flex items-start gap-3 cursor-pointer ${isPicked
                               ? 'bg-stone-950 border-amber-500'
                               : 'bg-stone-950/60 border-stone-800 hover:border-stone-700'
-                          }`}
+                            }`}
                         >
                           <PixelItemIcon spriteKey={item.spriteKey} size={36} />
                           <div className="min-w-0 flex-1">

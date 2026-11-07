@@ -15,7 +15,7 @@ class RetroSoundEngine {
       }
     }
     if (this.ctx && this.ctx.state === 'suspended') {
-      this.ctx.resume().catch(() => {});
+      this.ctx.resume().catch(() => { });
     }
     return this.ctx;
   }
@@ -95,6 +95,16 @@ class RetroSoundEngine {
   public playPlaceFurniture() {
     this.playTone(261.63, 0.06, 'triangle', 0, 0.07);
     this.playTone(392.0, 0.09, 'square', 0.05, 0.04);
+  }
+
+  public playThrow() {
+    this.playTone(660, 0.04, 'sine', 0, 0.06);
+    this.playTone(440, 0.08, 'triangle', 0.02, 0.05);
+  }
+
+  public playItemLand() {
+    this.playTone(330, 0.04, 'triangle', 0, 0.05);
+    this.playTone(220, 0.06, 'sine', 0.02, 0.04);
   }
 
   public playUnlockFanfare() {

@@ -5,6 +5,8 @@ import {
   CustomerPhase,
   Direction,
   FloatingEffect,
+  FloorItem,
+  FlyingItem,
   HeldItem,
   LiveCustomer,
   PlacedFurniture,
@@ -30,6 +32,8 @@ interface ShopFloorCanvasProps {
   dirtyTables: Record<string, boolean>;
   customers: LiveCustomer[];
   effects: FloatingEffect[];
+  flyingItems?: FlyingItem[];
+  floorItems?: FloorItem[];
   hiredStaffLevels: Record<string, number>;
   staffAssistEnabled: boolean;
   isBuildMode: boolean;
@@ -40,6 +44,7 @@ interface ShopFloorCanvasProps {
   onManualMoveStep: (dir: Direction) => void;
   onManualInteract: () => void;
   onManualWork: () => void;
+  onManualThrow?: () => void;
 }
 
 const TILE = 28;
@@ -67,6 +72,8 @@ export const ShopFloorCanvas: React.FC<ShopFloorCanvasProps> = ({
   dirtyTables,
   customers,
   effects,
+  flyingItems = [],
+  floorItems = [],
   hiredStaffLevels,
   staffAssistEnabled,
   isBuildMode,
@@ -77,6 +84,7 @@ export const ShopFloorCanvas: React.FC<ShopFloorCanvasProps> = ({
   onManualMoveStep,
   onManualInteract,
   onManualWork,
+  onManualThrow,
 }) => {
   const [hoverTile, setHoverTile] = useState<{ gx: number; gy: number } | null>(null);
 
@@ -148,8 +156,8 @@ export const ShopFloorCanvas: React.FC<ShopFloorCanvasProps> = ({
                   ? theme.kitchenFloorPrimary
                   : theme.kitchenFloorSecondary
                 : isAlt
-                ? theme.floorPrimary
-                : theme.floorSecondary;
+                  ? theme.floorPrimary
+                  : theme.floorSecondary;
 
               if (gy === 0) {
                 tileFill = '#292524';
@@ -577,6 +585,28 @@ export const ShopFloorCanvas: React.FC<ShopFloorCanvasProps> = ({
               );
             })}
 
+          {/* Items Dropped on Floor (can be picked up with Space) */}
+          {floorItems.map((fi) => (
+            <g
+              key={fi.id}
+              transform={`translate(${fi.gx * TILE + 6}, ${wallHeight + fi.gy * TILE + 6})`}
+              pointerEvents="none"
+            >
+              <ellipse cx={8} cy={14} rx={7} ry={2.5} fill="rgba(0, 0, 0, 0.45)" />
+              <g transform="scale(0.88)">{renderHeldItemSvg(fi.item, theme)}</g>
+              <rect
+                x={-1}
+                y={-1}
+                width={18}
+                height={18}
+                fill="none"
+                stroke="#FDE047"
+                strokeWidth="0.8"
+                strokeDasharray="2,2"
+              />
+            </g>
+          ))}
+
           {/* Controllable Player Chef Sprite + Held Item Above Head! */}
           {!isBuildMode && (
             <g
@@ -630,6 +660,31 @@ export const ShopFloorCanvas: React.FC<ShopFloorCanvasProps> = ({
             </g>
           )}
 
+          {/* Flying Projectiles in the Air (Parabolic Arc) */}
+          {flyingItems.map((fItem) => {
+            const curX = fItem.startX + (fItem.targetX - fItem.startX) * fItem.progress;
+            const curY = fItem.startY + (fItem.targetY - fItem.startY) * fItem.progress;
+            const arcOffset = Math.sin(fItem.progress * Math.PI) * 16;
+            const drawX = curX * TILE + 6;
+            const drawY = wallHeight + curY * TILE + 6;
+            return (
+              <g key={fItem.id} pointerEvents="none">
+                <ellipse
+                  cx={drawX + 8}
+                  cy={drawY + 12}
+                  rx={Math.max(2, 6 * (1 - fItem.progress * 0.3))}
+                  ry={2}
+                  fill="rgba(0, 0, 0, 0.3)"
+                />
+                <g transform={`translate(${drawX}, ${drawY - arcOffset})`}>
+                  <g transform="scale(0.95)">{renderHeldItemSvg(fItem.item, theme)}</g>
+                  {/* Speed trail sparkle */}
+                  <circle cx={-2} cy={8} r={1.6} fill="#FDE047" opacity={0.8} />
+                </g>
+              </g>
+            );
+          })}
+
           {/* Floating Feedback Popups */}
           {effects.map((fx) => {
             const fxX = fx.gx * TILE + 14;
@@ -638,12 +693,12 @@ export const ShopFloorCanvas: React.FC<ShopFloorCanvasProps> = ({
               fx.tone === 'GOLD'
                 ? '#FDE047'
                 : fx.tone === 'HEART'
-                ? '#FDA4AF'
-                : fx.tone === 'COMBO'
-                ? '#6EE7B7'
-                : fx.tone === 'WARN'
-                ? '#FB7185'
-                : '#7DD3FC';
+                  ? '#FDA4AF'
+                  : fx.tone === 'COMBO'
+                    ? '#6EE7B7'
+                    : fx.tone === 'WARN'
+                      ? '#FB7185'
+                      : '#7DD3FC';
 
             return (
               <text
@@ -710,6 +765,13 @@ export const ShopFloorCanvas: React.FC<ShopFloorCanvasProps> = ({
           </div>
 
           <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={onManualThrow}
+              className="px-4 py-2.5 bg-orange-500 hover:bg-orange-400 text-stone-950 font-semibold text-xs rounded-lg whitespace-nowrap shrink-0 pixel-shadow-sm cursor-pointer"
+            >
+              投擲物品 (Q)
+            </button>
             <button
               type="button"
               onClick={onManualInteract}

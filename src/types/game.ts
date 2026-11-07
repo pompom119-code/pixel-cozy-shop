@@ -47,13 +47,33 @@ export type HeldItem =
   | { kind: 'PREPPED_INGREDIENT'; ingId: string }
   | { kind: 'CLEAN_PLATE' }
   | {
-      kind: 'PLATED_DISH';
-      recipeId: string | null;
-      dishName: string;
-      spriteKey: string;
-    }
+    kind: 'PLATED_DISH';
+    recipeId: string | null;
+    dishName: string;
+    spriteKey: string;
+  }
   | { kind: 'BURNT_FOOD' }
   | { kind: 'DIRTY_PLATE' };
+
+export interface FloorItem {
+  id: string;
+  gx: number;
+  gy: number;
+  item: HeldItem;
+}
+
+export interface FlyingItem {
+  id: string;
+  item: HeldItem;
+  startX: number;
+  startY: number;
+  targetX: number;
+  targetY: number;
+  progress: number; // 0 to 1
+  targetStationUid?: string;
+  targetStationKind?: StationKind;
+  targetAction?: 'STOVE_ADD' | 'BOARD_PLACE' | 'COUNTER_PLACE' | 'TRASH' | 'FLOOR';
+}
 
 export interface PlayerChefState {
   x: number; // grid float coordinate (0 .. cols-1)
